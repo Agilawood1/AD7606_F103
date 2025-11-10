@@ -6,9 +6,7 @@
 
 
 ## 二、引脚定义
-
-![image-20251110202544791](C:\Users\HH\AppData\Roaming\Typora\typora-user-images\image-20251110202544791.png)
-
+![alt text](image.png)
 **使用步骤：**
 
 1. 将USB与工控机连接，串口 Tx 与大疆A板的 Rx 连接
