@@ -226,19 +226,21 @@ void floatToBytes(float *f, uint8_t *bytes, uint32_t count)
     }
 }
 
+float sick_param[8] = {0.6693, 0.6693, 0.6693, 0.6693, 0.6693, 0.6693, 0.6693, 0.6693};//神秘参数，每增加一个sick，自己调
+
 // 读取通道数据,手动改参吧，没有必要做封装
 void GetAdcData()
 {
-	float sick_param[8] = {0};//神秘参数，每增加一个sick，自己调
+//	float sick_param[8] = {0};//神秘参数，每增加一个sick，自己调
 
-	sick_param[0] = 0.7199;
-	sick_param[1] = 0.7199;
-	sick_param[2] = 0.7199;
-	sick_param[3] = 0.7199;
-	sick_param[4] = 0.7199;
-	sick_param[5] = 0.7199;
-	sick_param[6] = 0.7199;
-	sick_param[7] = 0.7199;
+//	sick_param[0] = 0.6693;
+//	sick_param[1] = 0.6693;
+//	sick_param[2] = 0.6693;
+//	sick_param[3] = 0.6693;
+//	sick_param[4] = 0.6693;
+//	sick_param[5] = 0.6693;
+//	sick_param[6] = 0.6693;
+//	sick_param[7] = 0.6693;
 
 	ADStartConv();
 
@@ -251,14 +253,14 @@ void GetAdcData()
 
 	SpiReadData(CH_data_buf);
 
-	sick_data[0] = (float)CH_data_buf[0] / 32768.0f * 10 * sick_param[0]; // 得到读取的电压值
-	sick_data[1] = (float)CH_data_buf[1] / 32768.0f * 10 * sick_param[1];
-	sick_data[2] = (float)CH_data_buf[2] / 32768.0f * 10 * sick_param[2];
-	sick_data[3] = (float)CH_data_buf[3] / 32768.0f * 10 * sick_param[3];
-	sick_data[4] = (float)CH_data_buf[4] / 32768.0f * 10 * sick_param[4];
-	sick_data[5] = (float)CH_data_buf[5] / 32768.0f * 10 * sick_param[5];
-	sick_data[6] = (float)CH_data_buf[6] / 32768.0f * 10 * sick_param[6];
-	sick_data[7] = (float)CH_data_buf[7] / 32768.0f * 10 * sick_param[7];
+	sick_data[0] = ((float)CH_data_buf[0] / 32768.0f) * 10 * sick_param[0] + 0.1052; // 得到读取的米数据
+	sick_data[1] = ((float)CH_data_buf[1] / 32768.0f) * 10 * sick_param[1] + 0.1052;
+	sick_data[2] = ((float)CH_data_buf[2] / 32768.0f) * 10 * sick_param[2] + 0.1052;
+	sick_data[3] = ((float)CH_data_buf[3] / 32768.0f) * 10 * sick_param[3] + 0.1052;
+	sick_data[4] = ((float)CH_data_buf[4] / 32768.0f) * 10 * sick_param[4] + 0.1052;
+	sick_data[5] = ((float)CH_data_buf[5] / 32768.0f) * 10 * sick_param[5] + 0.1052;
+	sick_data[6] = ((float)CH_data_buf[6] / 32768.0f) * 10 * sick_param[6] + 0.1052;
+	sick_data[7] = ((float)CH_data_buf[7] / 32768.0f) * 10 * sick_param[7] + 0.1052;
 }
 
 uint8_t tx_buf[36] = {0}; // 1(头) + 1(帧类型) 1(数据长度) + 32(数据) + 1(尾) = 36字节
@@ -268,30 +270,96 @@ uint8_t data_len = 32;
 uint8_t frame_tail = 0;
 uint8_t data_bytes[32]; // 8个float数据转成字节，共32字节
 
+//#define BUF_SIZE 512
+//#define FRAME_SIZE 36
+
+//typedef struct {
+//    uint8_t data[BUF_SIZE];
+//    volatile uint16_t head;  // 写入位置
+//    volatile uint16_t tail;  // 读取位置
+//} ring_buffer_t;
+
+//ring_buffer_t rb = {0};
+//uint8_t dma_tx_buf[FRAME_SIZE];
+//volatile uint8_t dma_busy = 0;
+
+uint8_t need_send = 0;
+uint8_t uart_tx_busy = 0;
 // 定时器回调里发数据，用 USB CDC 发给视觉上位机，串口发给电控下位机
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
 	if (htim == &htim1)
 	{
+//		uint8_t temp_buf[FRAME_SIZE];
 		// 10ms定时器
 		GetAdcData();//读取通道采样数据
 
 		// float数据转换成字节数组
-		floatToBytes(sick_data, data_bytes, 8); // 8个
+//		floatToBytes(sick_data, &tx_buf[3], 8); // 8个
+		floatToBytes(sick_data, &tx_buf[3], 4); // 8个
 
 		// 组装数据帧
 		tx_buf[1] = frame_type;
 		tx_buf[2] = data_len;
-		memcpy(&tx_buf[3], data_bytes, 32); // 8个float数据，共32字节
-		frame_head = calculateFrameHead(&tx_buf[1], 34);
+//		memcpy(&temp_buf[3], &temp_buf[3], 32); // 8个float数据，共32字节
+//		frame_head = calculateFrameHead(&tx_buf[1], 34);
+			frame_head = calculateFrameHead(&tx_buf[1], 18);
+
 		frame_tail = frame_head;
 		tx_buf[0] = frame_head;
-		tx_buf[35] = frame_tail;
+//		tx_buf[35] = frame_tail;
+				tx_buf[19] = frame_tail;
+        if (uart_tx_busy == 0) {  // 仅当DMA空闲时才触发发送
+            uart_tx_busy = 1;
 
-		// 通过USB CDC发送
-		CDC_Transmit_FS(tx_buf, 36);
+        HAL_UART_Transmit_DMA(&huart1, tx_buf, 20);
 
-		// 同时通过串口发送
-		HAL_UART_Transmit_DMA(&huart1, tx_buf, 36);
+        }
+				
+//		need_send = 1;
+//		//放入环形缓冲区
+//		uint16_t next_head = (rb.head + 1) % BUF_SIZE;
+//        if (next_head != rb.tail) // 缓冲区没满
+//		{  	
+//            memcpy(&rb.data[rb.head * FRAME_SIZE], temp_buf, FRAME_SIZE);
+//            rb.head = next_head;
+//        }
+// 		// 通过USB CDC发送
+// //		CDC_Transmit_FS(tx_buf, 36);
+
+		
+// 		// 同时通过串口发送
+// 		HAL_UART_Transmit_DMA(&huart1, tx_buf, 36);
 	}
+}
+
+//// 主循环 - 负责从缓冲区取数据发送
+//void process_uart_transmit(void)
+//{
+//    if (!dma_busy && rb.head != rb.tail) 
+//	{
+//        // 从环形缓冲区取一帧
+//        memcpy(dma_tx_buf, &rb.data[rb.tail * FRAME_SIZE], FRAME_SIZE);
+//        rb.tail = (rb.tail + 1) % BUF_SIZE;
+//        
+//        dma_busy = 1;
+//        if (HAL_UART_Transmit_DMA(&huart1, dma_tx_buf, FRAME_SIZE) != HAL_OK)
+//		{
+//            dma_busy = 0;  // 发送失败，重试
+//        }
+//    }
+//}
+
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart == &huart1) {
+        uart_tx_busy = 0;  // DMA发送完成
+    }
+}
+
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+    if (huart == &huart1) {
+        uart_tx_busy = 0;  // 出错也要释放标志
+    }
 }

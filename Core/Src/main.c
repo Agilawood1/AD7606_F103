@@ -58,6 +58,32 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+//将USB-P拉低，再拉高，以模拟重新拔插的过程
+//注意，此函数需要放在USB初始化函数的前面，否则不会生效
+void LL_usb_reload(void)  
+{
+
+	// 1. 开启时钟并强制复位 USB 外设，确保其回到初始状态
+    __HAL_RCC_USB_CLK_ENABLE();
+    __HAL_RCC_USB_FORCE_RESET();
+    HAL_Delay(10); 
+    __HAL_RCC_USB_RELEASE_RESET();
+	__HAL_RCC_USB_CLK_DISABLE();//使用排除法发现，不是USB抢占的问题，而是GPIO驱动能力不够，无法将电平拉低
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+  GPIO_InitStruct.Pin = GPIO_PIN_12;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;//提高驱动能力
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  HAL_GPIO_WritePin(GPIOA,GPIO_PIN_12,GPIO_PIN_RESET);
+  HAL_Delay(500);    
+	//释放引脚（这里不需要拉高，因为后续 USB 驱动会接管并处理）
+	HAL_GPIO_DeInit(GPIOA, GPIO_PIN_12);
+//  HAL_GPIO_WritePin(GPIOA,GPIO_PIN_12,GPIO_PIN_SET);
+//  HAL_Delay(500);    
+}
 
 /* USER CODE END 0 */
 
@@ -85,7 +111,7 @@ int main(void)
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
-
+//	LL_usb_reload();//模拟USB重新拔插
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
@@ -106,6 +132,12 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+//		if(need_send == 1)
+//		{
+//			  need_send = 0;
+//        HAL_UART_Transmit_DMA(&huart1, tx_buf, 36);
+//		}
+//    process_uart_transmit();
     // cs_state = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_4);
   }
   /* USER CODE END 3 */
