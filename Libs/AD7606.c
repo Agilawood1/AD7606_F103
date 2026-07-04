@@ -4,6 +4,7 @@
 #include "usbd_cdc_if.h"
 #include "tim.h"
 #include "usart.h"
+#include "math.h"
 
 /*
 	RST: PA6
@@ -224,22 +225,66 @@ void floatToBytes(float *f, uint8_t *bytes, uint32_t count)
 	}
 }
 
-float sick_param[8] = {0.6693, 0.6693, 0.6693, 0.6693, 0.6693, 0.6693, 0.6693, 0.6693}; // 神秘参数，每增加一个sick，自己调
+/* 低通滤波参数 */
+#define SAMPLE_FREQ  1000.0f        // 采样频率 1000Hz (1ms定时器)
+#define CUTOFF_FREQ  5.0f          // 截止频率(带宽)，单位Hz，根据需要调整
+static float sick_data_filtered[8] = {0};  // 滤波状态值
 
-// 读取通道数据,手动改参吧，没有必要做封装
+/* ========== 标定表（分段线性插值） ========== */
+/* 输入：传感器电压值（((float)CH_data_buf / 32768.0f) * 10.0f） */
+static const float calib_x[7] = {
+    0.0195f, 0.3052f, 0.6039f, 0.8606f,
+    1.1465f, 1.4160f, 3.3386f
+};
+/* 输出：距离值（米） */
+static const float calib_y[7] = {
+    0.081f,  0.288f,  0.501f,  0.686f,
+    0.885f,  1.085f,  2.446f
+};
+#define CALIB_POINTS 7
+
+/**
+ * @brief 分段线性插值查表
+ * @param x: 输入值（传感器电压）
+ * @return 对应的距离值（米）
+ */
+static float LinearInterp(float x)
+{
+    /* 边界处理：低于最小输入则钳位到最小输出 */
+    if (x <= calib_x[0]) return calib_y[0];
+    /* 边界处理：高于最大输入则钳位到最大输出 */
+    if (x >= calib_x[CALIB_POINTS - 1]) return calib_y[CALIB_POINTS - 1];
+
+    /* 查找 x 所在区间 */
+    for (uint8_t i = 0; i < CALIB_POINTS - 1; i++)
+    {
+        if (x < calib_x[i + 1])
+        {
+            /* 线性插值: y = y0 + (y1 - y0) * (x - x0) / (x1 - x0) */
+            float t = (x - calib_x[i]) / (calib_x[i + 1] - calib_x[i]);
+            return calib_y[i] + t * (calib_y[i + 1] - calib_y[i]);
+        }
+    }
+
+    return calib_y[CALIB_POINTS - 1];
+}
+
+/* 一阶低通滤波 - 基于截止频率 */
+static void lowpass_filter(float *raw, float *filtered, uint8_t len)
+{
+    /* 根据采样频率和截止频率计算alpha系数 */
+    float omega = 2.0f * 3.14159265f * CUTOFF_FREQ / SAMPLE_FREQ;
+    float alpha = 1.0f - expf(-omega);   // 脉冲响应不变法
+
+    for (uint8_t i = 0; i < len; i++)
+    {
+        filtered[i] = alpha * raw[i] + (1.0f - alpha) * filtered[i];
+    }
+}
+
+// 读取通道数据
 void GetAdcData()
 {
-	//	float sick_param[8] = {0};//神秘参数，每增加一个sick，自己调
-
-	//	sick_param[0] = 0.6693;
-	//	sick_param[1] = 0.6693;
-	//	sick_param[2] = 0.6693;
-	//	sick_param[3] = 0.6693;
-	//	sick_param[4] = 0.6693;
-	//	sick_param[5] = 0.6693;
-	//	sick_param[6] = 0.6693;
-	//	sick_param[7] = 0.6693;
-
 	ADStartConv();
 
 	while (READ_AD_BUSY == 1)
@@ -251,14 +296,20 @@ void GetAdcData()
 
 	SpiReadData(CH_data_buf);
 
-	sick_data[0] = ((float)CH_data_buf[0] / 32768.0f) * 10 * sick_param[0] + 0.1052; // 得到读取的米数据
-	sick_data[1] = ((float)CH_data_buf[1] / 32768.0f) * 10 * sick_param[1] + 0.1052;
-	sick_data[2] = ((float)CH_data_buf[2] / 32768.0f) * 10 * sick_param[2] + 0.1052;
-	sick_data[3] = ((float)CH_data_buf[3] / 32768.0f) * 10 * sick_param[3] + 0.1052;
-	sick_data[4] = ((float)CH_data_buf[4] / 32768.0f) * 10 * sick_param[4] + 0.1052;
-	sick_data[5] = ((float)CH_data_buf[5] / 32768.0f) * 10 * sick_param[5] + 0.1052;
-	sick_data[6] = ((float)CH_data_buf[6] / 32768.0f) * 10 * sick_param[6] + 0.1052;
-	sick_data[7] = ((float)CH_data_buf[7] / 32768.0f) * 10 * sick_param[7] + 0.1052;
+	/* 将AD原始值转为电压，再通过标定表插值得到距离 */
+	for (uint8_t i = 0; i < 8; i++)
+	{
+		float voltage = ((float)CH_data_buf[i] / 32768.0f) * 10.0f;
+		sick_data[i] = LinearInterp(voltage);
+	}
+
+	/* ———— 低通滤波 ———— */
+    lowpass_filter(sick_data, sick_data_filtered, 8);
+    /* 将滤波结果写回sick_data供后续发送 */
+    for (uint8_t i = 0; i < 8; i++)
+    {
+        sick_data[i] = sick_data_filtered[i];
+    }
 }
 
 uint8_t tx_buf[36] = {0}; // 1(头) + 1(帧类型) 1(数据长度) + 32(数据) + 1(尾) = 36字节
@@ -309,15 +360,15 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 		tx_buf[19] = frame_tail;
 
 		// usb发送局部缓冲区
-		CDC_Transmit_FS(tx_buf, 20); // 发送很快，应该不用考虑tx_buf被下一个定时器中断重新覆盖的情况
+		// CDC_Transmit_FS(tx_buf, 20); // 发送很快，应该不用考虑tx_buf被下一个定时器中断重新覆盖的情况
 
 
-		if (uart_tx_busy == 0)
-		{ 
-			// 仅当DMA空闲时才触发发送
-			uart_tx_busy = 1;
+//		if (uart_tx_busy == 0)
+//		{ 
+//			// 仅当DMA空闲时才触发发送
+//			uart_tx_busy = 1;
 			HAL_UART_Transmit_DMA(&huart1, tx_buf, 20);
-		}
+//		}
 
 		//		need_send = 1;
 		//		//放入环形缓冲区
